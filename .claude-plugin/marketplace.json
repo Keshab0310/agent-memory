@@ -1,0 +1,15 @@
+{
+  "name": "keshab-plugins",
+  "owner": {
+    "name": "Keshab0310",
+    "url": "https://github.com/Keshab0310"
+  },
+  "plugins": [
+    {
+      "name": "agent-memory",
+      "source": "./",
+      "description": "Save 60-90% on LLM token costs with intelligent memory compression",
+      "version": "0.1.0"
+    }
+  ]
+}

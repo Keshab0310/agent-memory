@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "agent-memory": {
+      "command": "python",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/plugin/mcp_server.py"],
+      "env": {
+        "PYTHONPATH": "${CLAUDE_PLUGIN_ROOT}",
+        "AGENT_MEMORY_DATA": "${CLAUDE_PLUGIN_DATA}"
+      }
+    }
+  }
+}

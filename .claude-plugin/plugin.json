@@ -1,0 +1,11 @@
+{
+  "name": "agent-memory",
+  "version": "0.1.0",
+  "description": "Save 60-90% on LLM token costs with intelligent memory compression for multi-agent systems",
+  "author": {
+    "name": "Keshab0310"
+  },
+  "repository": "https://github.com/Keshab0310/agent-memory",
+  "license": "MIT",
+  "keywords": ["memory", "token-optimization", "multi-agent", "compression", "mcp"]
+}
