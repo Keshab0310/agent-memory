@@ -8,7 +8,7 @@ setup(
     long_description_content_type="text/markdown",
     author="agent-memory contributors",
     license="MIT",
-    url="https://github.com/YOUR_USERNAME/agent-memory",
+    url="https://github.com/Keshab0310/agent-memory",
     packages=find_packages(),
     python_requires=">=3.10",
     install_requires=[
