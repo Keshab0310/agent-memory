@@ -45,8 +45,14 @@ choices and 'feature' for planned implementations.""",
 }
 
 
-def get_agent_config(agent_type: str, **overrides) -> AgentConfig:
-    """Get configuration for a known agent type."""
+def get_agent_config(agent_type: str, profile=None, **overrides) -> AgentConfig:
+    """Get configuration for a known agent type.
+
+    If a ModelProfile is provided, it overrides model and output token defaults.
+    This lets you do: get_agent_config("researcher", profile=get_profile("opus"))
+    and get Opus-tuned settings automatically.
+    """
+    # Static defaults (used when no profile is provided)
     defaults = {
         "researcher": {"model": "claude-sonnet-4-6-20250514", "max_output_tokens": 2000},
         "coder": {"model": "claude-sonnet-4-6-20250514", "max_output_tokens": 4096},
@@ -55,17 +61,29 @@ def get_agent_config(agent_type: str, **overrides) -> AgentConfig:
         "planner": {"model": "claude-sonnet-4-6-20250514", "max_output_tokens": 1500},
     }
 
-    config_defaults = defaults.get(agent_type, {
-        "model": "claude-sonnet-4-6-20250514",
-        "max_output_tokens": 2000,
-    })
+    if profile:
+        # Profile-driven: use profile's work model and output limits
+        model = profile.work_model
+        # Summarizer always uses the condenser model (cheap)
+        if agent_type == "summarizer":
+            model = profile.condenser_model
+        max_output = profile.output_limits.get(
+            agent_type, profile.max_output_tokens
+        )
+    else:
+        config_defaults = defaults.get(agent_type, {
+            "model": "claude-sonnet-4-6-20250514",
+            "max_output_tokens": 2000,
+        })
+        model = config_defaults["model"]
+        max_output = config_defaults["max_output_tokens"]
 
     prompt = AGENT_PROMPTS.get(agent_type, f"You are a {agent_type} agent.")
 
     return AgentConfig(
         agent_type=agent_type,
-        model=overrides.get("model", config_defaults["model"]),
-        max_output_tokens=overrides.get("max_output_tokens", config_defaults["max_output_tokens"]),
+        model=overrides.get("model", model),
+        max_output_tokens=overrides.get("max_output_tokens", max_output),
         system_prompt=overrides.get("system_prompt", prompt),
         tools=overrides.get("tools", []),
     )

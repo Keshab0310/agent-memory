@@ -31,18 +31,29 @@ def estimate_tokens(text: str) -> int:
     return len(text) // CHARS_PER_TOKEN
 
 
-def format_observation_compact(obs: Observation) -> str:
-    """Format observation into minimal text representation."""
+def format_observation_compact(
+    obs: Observation,
+    max_facts: int = 3,
+    max_narrative_chars: int = 200,
+) -> str:
+    """Format observation into text representation.
+
+    Rendering richness is controlled by max_facts and max_narrative_chars,
+    which are set by the active model profile (e.g., Opus gets 10 facts
+    and 1000-char narratives, Haiku gets 2 facts and 100-char).
+    """
     parts = [f"[{obs.obs_type}] {obs.title}"]
     if obs.subtitle:
         parts.append(f"  {obs.subtitle}")
     if obs.facts:
-        for fact in obs.facts[:3]:  # Cap at 3 facts
+        for fact in obs.facts[:max_facts]:
             parts.append(f"  - {fact}")
-    if obs.narrative and len(obs.narrative) <= 200:
+        if len(obs.facts) > max_facts:
+            parts.append(f"  ... and {len(obs.facts) - max_facts} more facts")
+    if obs.narrative and len(obs.narrative) <= max_narrative_chars:
         parts.append(f"  {obs.narrative}")
     elif obs.narrative:
-        parts.append(f"  {obs.narrative[:200]}...")
+        parts.append(f"  {obs.narrative[:max_narrative_chars]}...")
     return "\n".join(parts)
 
 
@@ -68,11 +79,42 @@ class ContextBuilder:
     2. Query observations within budget
     3. Render timeline with full/compact modes
     4. Inject cross-agent observations by relevance
+
+    Rendering richness adapts to the active model profile:
+    - Opus (1M): 20 own obs, 10 cross-agent, 10 facts, 1000-char narrative
+    - Sonnet (200K): 5 own obs, 3 cross-agent, 3 facts, 200-char narrative
+    - Haiku (200K): 3 own obs, 2 cross-agent, 2 facts, 100-char narrative
+    - Local (16K): 3 own obs, 1 cross-agent, 2 facts, 100-char narrative
     """
 
-    def __init__(self, memory: MemoryStore, budget: Optional[ContextBudget] = None):
+    def __init__(
+        self,
+        memory: MemoryStore,
+        budget: Optional[ContextBudget] = None,
+        max_facts: int = 3,
+        max_narrative_chars: int = 200,
+        max_own_observations: int = 5,
+        max_cross_observations: int = 3,
+    ):
         self.memory = memory
         self.budget = budget or ContextBudget()
+        self.max_facts = max_facts
+        self.max_narrative_chars = max_narrative_chars
+        self.max_own_observations = max_own_observations
+        self.max_cross_observations = max_cross_observations
+
+    @classmethod
+    def from_profile(cls, memory: MemoryStore, profile) -> "ContextBuilder":
+        """Create a ContextBuilder configured from a ModelProfile."""
+        from src.profiles import get_context_budget
+        return cls(
+            memory=memory,
+            budget=get_context_budget(profile),
+            max_facts=profile.max_facts_per_obs,
+            max_narrative_chars=profile.max_narrative_chars,
+            max_own_observations=profile.max_own_observations,
+            max_cross_observations=profile.max_cross_observations,
+        )
 
     def build(
         self,
@@ -95,11 +137,13 @@ class ContextBuilder:
         # Section 2: This agent's recent observations
         own_budget = min(self.budget.own_observations, budget_remaining)
         own_obs = self.memory.get_recent_observations(
-            project=project, agent_id=agent_id, limit=5
+            project=project, agent_id=agent_id, limit=self.max_own_observations
         )
         own_section_parts = ["## Your Recent Work"]
         for obs in own_obs:
-            text = format_observation_compact(obs)
+            text = format_observation_compact(
+                obs, max_facts=self.max_facts, max_narrative_chars=self.max_narrative_chars
+            )
             tokens = estimate_tokens(text)
             if tokens <= own_budget:
                 own_section_parts.append(text)
@@ -117,13 +161,13 @@ class ContextBuilder:
             cross_obs = self.memory.semantic_search(
                 query=task_description,
                 project=project,
-                limit=3,
+                limit=self.max_cross_observations,
                 exclude_agent=agent_id,
             )
             if cross_obs:
                 cross_parts = ["## Related Work (Other Agents)"]
                 for obs in cross_obs:
-                    text = f"[{obs.agent_id}] {format_observation_compact(obs)}"
+                    text = f"[{obs.agent_id}] {format_observation_compact(obs, max_facts=self.max_facts, max_narrative_chars=self.max_narrative_chars)}"
                     tokens = estimate_tokens(text)
                     if tokens <= cross_budget:
                         cross_parts.append(text)
