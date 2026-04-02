@@ -66,15 +66,93 @@ context = builder.build(
 
 ### As a Claude Code Plugin
 
+#### Step 1: Install
+
 ```bash
-# Install from marketplace (coming soon)
-claude plugin install agent-memory
+# Add the marketplace
+claude plugin marketplace add Keshab0310/agent-memory
+
+# Install the plugin
+claude plugin install agent-memory@keshab-plugins
 ```
 
-The plugin automatically:
-- Compresses tool output after every tool call (PostToolUse hook)
-- Injects relevant memory at session start (SessionStart hook)
-- Exposes `memory_search`, `memory_store`, `memory_stats` as MCP tools
+Verify it's installed:
+```bash
+claude plugin list
+# Should show: agent-memory@keshab-plugins  v0.1.0  ✔ enabled
+```
+
+#### Step 2: Use It (It's Automatic)
+
+Once installed, the plugin works **silently in the background** with zero configuration:
+
+**What happens automatically:**
+- Every time Claude reads a file, runs a command, or edits code, the **PostToolUse hook** compresses that tool output into a structured observation and stores it locally
+- Every time you start a new session (or resume one), the **SessionStart hook** injects relevant past observations into Claude's context
+- Your plan is auto-detected (Pro/Max/API) and memory budgets adjust accordingly
+
+**You don't need to change how you use Claude Code.** Just work normally — the plugin handles compression and recall behind the scenes.
+
+#### Step 3: Search Past Work (MCP Tools)
+
+The plugin exposes 4 MCP tools that Claude can use when you ask about past work:
+
+```
+You: "What did we find about the database schema yesterday?"
+Claude: [uses memory_search tool] -> finds relevant observations
+  -> "Yesterday we discovered the users table was missing an index
+     on email, which caused the slow login query. We added a B-tree
+     index and response time dropped from 2.3s to 45ms."
+```
+
+```
+You: "How much have we saved on tokens?"
+Claude: [uses memory_stats tool]
+  -> "156 observations stored. Compression ratio: 18.2:1.
+     Token savings: 94%. Estimated cost saved: $1.34."
+```
+
+The 4 tools available:
+| Tool | What It Does | When Claude Uses It |
+|------|-------------|-------------------|
+| `memory_search` | Searches past observations by keyword/topic | When you ask "what did we find about X?" |
+| `memory_store` | Manually stores an observation | When you say "remember this for later" |
+| `memory_stats` | Shows token savings dashboard | When you ask about costs or savings |
+| `memory_context` | Builds a context summary for a task | When starting complex multi-step work |
+
+#### Step 4: Check It's Working
+
+After using Claude Code for a few tasks with the plugin installed:
+
+```
+You: "Show me my memory stats"
+Claude: [uses memory_stats]
+  Total observations: 23
+  Compression ratio: 12.4:1
+  Token savings: 91%
+```
+
+If you see observations being stored and savings > 0%, the plugin is working.
+
+#### Uninstall
+
+```bash
+claude plugin uninstall agent-memory@keshab-plugins
+claude plugin marketplace remove keshab-plugins
+```
+
+#### Plugin Data Location
+
+All data is stored locally:
+- **SQLite database**: `~/.claude/plugins/data/agent-memory/memory.db`
+- **No data leaves your machine** — see [PRIVACY.md](./PRIVACY.md)
+
+Delete all plugin data:
+```bash
+rm -rf ~/.claude/plugins/data/agent-memory/
+```
+
+---
 
 ### With Local LLMs (Ollama, LM Studio)
 
