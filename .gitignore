@@ -1,0 +1,42 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+
+# Data
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# ChromaDB
+chroma/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env
+.env
+.env.local
+venv/
+.venv/
+
+# Testing
+.pytest_cache/
+htmlcov/
+.coverage
+
+# Temp
+*.tmp
+*.log
