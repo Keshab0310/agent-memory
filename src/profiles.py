@@ -1,15 +1,27 @@
 """
-Model Profiles — Pre-configured settings for different Claude models and plans.
+Model Profiles — Plan-aware, model-aware auto-configuration.
 
-Each profile adjusts token budgets, condensation thresholds, rate limits,
-and model routing to match the model's context window and pricing.
+Real-world Claude plan structure (as of 2026):
+  - Pro Plan: Default is Sonnet 4.6 with 1M context.
+    Opus 4.6 accessible but 1M variant needs /extra-usage.
+    Usage is CAPPED — adaptive thinking on "High" burns limits fast.
+    Pricing: $5 input / $25 output per 1M tokens (standard).
+  - Max Plan: Unlimited usage, higher rate limits.
+    Both Sonnet and Opus with 1M context, no caps.
+
+Key insight: On Pro Plan, the context window is 1M for BOTH Sonnet and Opus,
+but the usage cap means every injected token counts against your daily limit.
+Opus on Pro with "High" effort thinking can consume 10-20x more tokens than
+Sonnet for the same task. Our memory injection must account for this.
 
 Usage:
-    from src.profiles import get_profile, PROFILES
+    from src.profiles import detect_profile
 
-    profile = get_profile("opus")  # or "sonnet", "haiku", "local"
-    budget = profile.context_budget
-    condenser_threshold = profile.condensation_threshold
+    # Auto-detects model + plan from environment
+    profile = detect_profile()
+
+    # Or explicit
+    profile = detect_profile("claude-sonnet-4-6-20250514")
 """
 
 from dataclasses import dataclass, field
@@ -18,22 +30,23 @@ from typing import Optional
 
 @dataclass
 class ModelProfile:
-    """Complete configuration profile for a model tier."""
+    """Complete configuration profile for a model + plan combination."""
 
     # Identity
     name: str
     description: str
+    plan: str  # "pro", "max", "api", "local"
 
     # Model IDs
-    work_model: str          # Primary model for agent work
-    router_model: str        # Cheap model for routing decisions
-    condenser_model: str     # Model for summarization/condensation
+    work_model: str
+    router_model: str
+    condenser_model: str
 
     # Context window
-    context_window: int      # Total context window size in tokens
-    max_output_tokens: int   # Default max output per agent call
+    context_window: int
+    max_output_tokens: int
 
-    # Memory budgets (all in tokens)
+    # Memory budgets (tokens)
     working_memory_total: int
     budget_task_description: int
     budget_own_observations: int
@@ -41,13 +54,13 @@ class ModelProfile:
     budget_summaries: int
 
     # Observation rendering
-    max_facts_per_obs: int          # Facts to show per observation in context
-    max_narrative_chars: int        # Narrative truncation limit in context
-    max_own_observations: int       # How many own observations to fetch
-    max_cross_observations: int     # How many cross-agent observations to fetch
+    max_facts_per_obs: int
+    max_narrative_chars: int
+    max_own_observations: int
+    max_cross_observations: int
 
     # Condensation
-    condensation_threshold: int     # Condense after N observations per agent
+    condensation_threshold: int
 
     # Rate limits
     requests_per_minute: int
@@ -56,16 +69,175 @@ class ModelProfile:
     # Agent output limits per type
     output_limits: dict = field(default_factory=dict)
 
-    # Cost per 1M tokens (input/output) for ROI tracking
+    # Cost per 1M tokens (input/output)
     cost_per_1m_input: float = 0.0
     cost_per_1m_output: float = 0.0
 
+    # Adaptive thinking budget control
+    # On Pro Plan Opus, "High" effort burns limits fast.
+    # We recommend capping thinking budget to save allowance.
+    thinking_budget_tokens: Optional[int] = None
 
-# ── Profile Definitions ──
 
-OPUS_PROFILE = ModelProfile(
-    name="opus",
-    description="Claude Opus 4.6 — 1M context, Max Plan. Maximum memory, relaxed condensation.",
+# ═══════════════════════════════════════════════════════════
+# PRO PLAN PROFILES
+# Usage is CAPPED. Every token counts against daily limit.
+# Strategy: lean injection, aggressive condensation.
+# ═══════════════════════════════════════════════════════════
+
+SONNET_PRO_PROFILE = ModelProfile(
+    name="sonnet-pro",
+    description="Sonnet 4.6 on Pro Plan — 1M context, capped usage. Default for most Pro users.",
+    plan="pro",
+
+    work_model="claude-sonnet-4-6-20250514",
+    router_model="claude-haiku-4-5-20251001",
+    condenser_model="claude-haiku-4-5-20251001",
+
+    # Pro Plan Sonnet has 1M context (NOT 200K)
+    context_window=1_000_000,
+    max_output_tokens=16_000,
+
+    # Conservative: 8K memory. Pro usage is capped, don't waste tokens.
+    # 8K = 0.8% of 1M window — barely noticeable in context but keeps usage low.
+    working_memory_total=8_000,
+    budget_task_description=800,
+    budget_own_observations=4_000,
+    budget_cross_agent=2_400,
+    budget_summaries=800,
+
+    max_facts_per_obs=3,
+    max_narrative_chars=200,
+    max_own_observations=5,
+    max_cross_observations=3,
+
+    # Condense at 5 — keep observation count low to reduce future injection size
+    condensation_threshold=5,
+
+    requests_per_minute=50,
+    tokens_per_minute=80_000,
+
+    output_limits={
+        "researcher": 2000,
+        "coder": 4096,
+        "reviewer": 1500,
+        "summarizer": 500,
+        "planner": 1500,
+    },
+
+    cost_per_1m_input=5.0,
+    cost_per_1m_output=25.0,
+    thinking_budget_tokens=None,  # Sonnet thinking is cheaper, no need to cap
+)
+
+OPUS_PRO_PROFILE = ModelProfile(
+    name="opus-pro",
+    description="Opus 4.6 on Pro Plan — 1M context, VERY limited usage. Ultra-conservative.",
+    plan="pro",
+
+    work_model="claude-opus-4-6-20250514",
+    router_model="claude-haiku-4-5-20251001",
+    condenser_model="claude-haiku-4-5-20251001",
+
+    # 1M context available but usage drains FAST on Pro with Opus
+    context_window=1_000_000,
+    max_output_tokens=8_000,  # Hard cap — Opus output is 5x more expensive
+
+    # MINIMAL memory injection. On Pro, Opus messages are precious.
+    # 50K injected context on Opus = 50K * $5/1M = $0.25 PER MESSAGE just for memory.
+    # With "High" adaptive thinking, Opus may generate 20K+ thinking tokens on top.
+    # A single Opus message can cost $0.25-1.50 on Pro. We can't add to that.
+    #
+    # Strategy: inject LESS context but make it HIGHER QUALITY.
+    # Opus is smart enough to do more with less. Give it the best 5K tokens, not 50K mediocre ones.
+    working_memory_total=5_000,
+    budget_task_description=500,
+    budget_own_observations=2_500,
+    budget_cross_agent=1_500,
+    budget_summaries=500,
+
+    # Quality over quantity — Opus extracts more value from each observation
+    max_facts_per_obs=5,
+    max_narrative_chars=300,
+    max_own_observations=3,    # Only the 3 most relevant
+    max_cross_observations=2,
+
+    # Condense VERY aggressively — fewer stored observations = less to inject later
+    condensation_threshold=3,
+
+    # Pro Plan has tighter limits, and Opus burns them faster
+    requests_per_minute=30,
+    tokens_per_minute=60_000,
+
+    output_limits={
+        "researcher": 1500,
+        "coder": 3000,
+        "reviewer": 1000,
+        "summarizer": 400,
+        "planner": 1000,
+    },
+
+    cost_per_1m_input=5.0,
+    cost_per_1m_output=25.0,
+
+    # CRITICAL: Cap adaptive thinking to prevent runaway token usage.
+    # "High" effort on Opus can generate 30K+ thinking tokens per message.
+    # Capping at 10K saves ~60% of thinking costs while keeping quality high.
+    thinking_budget_tokens=10_000,
+)
+
+
+# ═══════════════════════════════════════════════════════════
+# MAX PLAN PROFILES
+# Unlimited usage. Go wide with memory injection.
+# ═══════════════════════════════════════════════════════════
+
+SONNET_MAX_PROFILE = ModelProfile(
+    name="sonnet-max",
+    description="Sonnet 4.6 on Max Plan — 1M context, unlimited usage. Generous memory.",
+    plan="max",
+
+    work_model="claude-sonnet-4-6-20250514",
+    router_model="claude-haiku-4-5-20251001",
+    condenser_model="claude-haiku-4-5-20251001",
+
+    context_window=1_000_000,
+    max_output_tokens=16_000,
+
+    # Max Plan: we can afford 16K memory (1.6% of 1M)
+    working_memory_total=16_000,
+    budget_task_description=1_500,
+    budget_own_observations=8_000,
+    budget_cross_agent=5_000,
+    budget_summaries=1_500,
+
+    max_facts_per_obs=5,
+    max_narrative_chars=400,
+    max_own_observations=10,
+    max_cross_observations=5,
+
+    condensation_threshold=10,
+
+    requests_per_minute=100,
+    tokens_per_minute=200_000,
+
+    output_limits={
+        "researcher": 4000,
+        "coder": 8192,
+        "reviewer": 3000,
+        "summarizer": 1000,
+        "planner": 3000,
+    },
+
+    cost_per_1m_input=5.0,
+    cost_per_1m_output=25.0,
+    thinking_budget_tokens=None,
+)
+
+OPUS_MAX_PROFILE = ModelProfile(
+    name="opus-max",
+    description="Opus 4.6 on Max Plan — 1M context, unlimited usage. Maximum memory.",
+    plan="max",
 
     work_model="claude-opus-4-6-20250514",
     router_model="claude-haiku-4-5-20251001",
@@ -74,23 +246,20 @@ OPUS_PROFILE = ModelProfile(
     context_window=1_000_000,
     max_output_tokens=64_000,
 
-    # 5% of 1M = 50K tokens for working memory
+    # Max Plan + Opus: go wide. 50K memory = 5% of window.
     working_memory_total=50_000,
     budget_task_description=2_000,
     budget_own_observations=25_000,
     budget_cross_agent=18_000,
     budget_summaries=5_000,
 
-    # Rich observation rendering — we have room
     max_facts_per_obs=10,
     max_narrative_chars=1000,
     max_own_observations=20,
     max_cross_observations=10,
 
-    # Condense less aggressively — context window is massive
     condensation_threshold=25,
 
-    # Max Plan has generous limits
     requests_per_minute=100,
     tokens_per_minute=400_000,
 
@@ -102,13 +271,20 @@ OPUS_PROFILE = ModelProfile(
         "planner": 4000,
     },
 
-    cost_per_1m_input=15.0,
-    cost_per_1m_output=75.0,
+    cost_per_1m_input=5.0,
+    cost_per_1m_output=25.0,
+    thinking_budget_tokens=None,  # Unlimited plan, no need to cap
 )
 
-SONNET_PROFILE = ModelProfile(
-    name="sonnet",
-    description="Claude Sonnet 4.6 — 200K context. Balanced cost/performance.",
+
+# ═══════════════════════════════════════════════════════════
+# API PLAN (direct API key, pay-per-token)
+# ═══════════════════════════════════════════════════════════
+
+SONNET_API_PROFILE = ModelProfile(
+    name="sonnet-api",
+    description="Sonnet 4.6 via API key — pay per token, 200K context.",
+    plan="api",
 
     work_model="claude-sonnet-4-6-20250514",
     router_model="claude-haiku-4-5-20251001",
@@ -117,7 +293,6 @@ SONNET_PROFILE = ModelProfile(
     context_window=200_000,
     max_output_tokens=16_000,
 
-    # 4% of 200K = 8K tokens
     working_memory_total=8_000,
     budget_task_description=800,
     budget_own_observations=4_000,
@@ -148,7 +323,8 @@ SONNET_PROFILE = ModelProfile(
 
 HAIKU_PROFILE = ModelProfile(
     name="haiku",
-    description="Claude Haiku 4.5 — 200K context. Cheapest, fastest. For cost-sensitive workloads.",
+    description="Haiku 4.5 — 200K context, cheapest and fastest.",
+    plan="api",
 
     work_model="claude-haiku-4-5-20251001",
     router_model="claude-haiku-4-5-20251001",
@@ -157,7 +333,6 @@ HAIKU_PROFILE = ModelProfile(
     context_window=200_000,
     max_output_tokens=8_000,
 
-    # Smaller budget — Haiku is cheap, prioritize speed over depth
     working_memory_total=4_000,
     budget_task_description=500,
     budget_own_observations=2_000,
@@ -188,16 +363,16 @@ HAIKU_PROFILE = ModelProfile(
 
 LOCAL_PROFILE = ModelProfile(
     name="local",
-    description="Local LLM (Ollama/LM Studio). No API costs, smaller context windows.",
+    description="Local LLM (Ollama/LM Studio). No API costs.",
+    plan="local",
 
     work_model="phi4:latest",
     router_model="phi4:latest",
     condenser_model="phi4:latest",
 
-    context_window=16_000,  # Most local models have 4K-16K
+    context_window=16_000,
     max_output_tokens=2_048,
 
-    # Conservative — local models have small windows
     working_memory_total=1_500,
     budget_task_description=300,
     budget_own_observations=700,
@@ -211,7 +386,6 @@ LOCAL_PROFILE = ModelProfile(
 
     condensation_threshold=3,
 
-    # No rate limits for local
     requests_per_minute=999,
     tokens_per_minute=999_999,
 
@@ -228,40 +402,53 @@ LOCAL_PROFILE = ModelProfile(
 )
 
 
+# ═══════════════════════════════════════════════════════════
+# Profile Registry
+# ═══════════════════════════════════════════════════════════
+
 PROFILES = {
-    "opus": OPUS_PROFILE,
-    "sonnet": SONNET_PROFILE,
+    # Explicit plan+model combos
+    "opus-max": OPUS_MAX_PROFILE,
+    "opus-pro": OPUS_PRO_PROFILE,
+    "sonnet-max": SONNET_MAX_PROFILE,
+    "sonnet-pro": SONNET_PRO_PROFILE,
+    "sonnet-api": SONNET_API_PROFILE,
     "haiku": HAIKU_PROFILE,
     "local": LOCAL_PROFILE,
+    # Short aliases (default to Pro since that's the most common plan)
+    "opus": OPUS_PRO_PROFILE,
+    "sonnet": SONNET_PRO_PROFILE,
 }
 
 
 def get_profile(name: str) -> ModelProfile:
-    """Get a model profile by name. Defaults to sonnet."""
-    return PROFILES.get(name.lower(), SONNET_PROFILE)
+    """Get a profile by name. Defaults to sonnet-pro."""
+    return PROFILES.get(name.lower(), SONNET_PRO_PROFILE)
 
 
 def detect_profile(model_id: Optional[str] = None) -> ModelProfile:
-    """Auto-detect the correct profile from a model ID or environment.
+    """Auto-detect the correct profile from model ID + plan.
 
-    Detection order:
-    1. If model_id is passed, match it
-    2. Check ANTHROPIC_MODEL env var
-    3. Check CLAUDE_MODEL env var (set by Claude Code)
-    4. Check CLAUDE_CODE_MAX_PLAN env var (Max Plan flag)
-    5. Default to sonnet
+    Detection chain:
+    1. Model ID (arg or ANTHROPIC_MODEL / CLAUDE_MODEL env)
+    2. Plan detection (CLAUDE_CODE_MAX_PLAN or ANTHROPIC_API_KEY presence)
+    3. Combine model + plan to select profile
+
+    The critical distinction:
+    - Pro Plan Opus: 5K memory, condense at 3, cap thinking at 10K
+    - Max Plan Opus: 50K memory, condense at 25, no thinking cap
+    - Pro Plan Sonnet (default): 8K memory, condense at 5
 
     Examples:
-        detect_profile("claude-opus-4-6-20250514")     -> OPUS_PROFILE
-        detect_profile("claude-sonnet-4-6-20250514")   -> SONNET_PROFILE
-        detect_profile("claude-haiku-4-5-20251001")    -> HAIKU_PROFILE
-        detect_profile("phi4:latest")                  -> LOCAL_PROFILE
-        detect_profile("llama3.1:8b")                  -> LOCAL_PROFILE
-        detect_profile()                               -> auto from env
+        detect_profile("claude-opus-4-6-20250514")
+          -> Pro user? OPUS_PRO (lean 5K)
+          -> Max user? OPUS_MAX (rich 50K)
+
+        detect_profile()  # no args, reads env
+          -> Pro + Sonnet (default): SONNET_PRO
     """
     import os
 
-    # Resolve model ID from args or environment
     if model_id is None:
         model_id = (
             os.environ.get("ANTHROPIC_MODEL")
@@ -271,26 +458,67 @@ def detect_profile(model_id: Optional[str] = None) -> ModelProfile:
 
     model_lower = model_id.lower()
 
-    # Check for Max Plan env flag (Claude Code sets this)
-    is_max_plan = os.environ.get("CLAUDE_CODE_MAX_PLAN", "").lower() in ("1", "true")
+    # Detect plan tier
+    plan = _detect_plan()
 
-    # Match model family
+    # Match model family + plan
     if "opus" in model_lower:
-        return OPUS_PROFILE
+        if plan == "max":
+            return OPUS_MAX_PROFILE
+        return OPUS_PRO_PROFILE  # Pro is the safe default for Opus
+
     elif "sonnet" in model_lower:
-        # Sonnet on Max Plan gets upgraded memory budget (not full Opus, but boosted)
-        if is_max_plan:
-            return _sonnet_max_plan_profile()
-        return SONNET_PROFILE
+        if plan == "max":
+            return SONNET_MAX_PROFILE
+        if plan == "api":
+            return SONNET_API_PROFILE
+        return SONNET_PRO_PROFILE
+
     elif "haiku" in model_lower:
         return HAIKU_PROFILE
+
     elif _is_local_model(model_lower):
         return LOCAL_PROFILE
-    elif is_max_plan:
-        # Max Plan but unknown model — assume Opus-tier
-        return OPUS_PROFILE
+
     else:
-        return SONNET_PROFILE
+        # Unknown model — default based on plan
+        if plan == "max":
+            return SONNET_MAX_PROFILE
+        return SONNET_PRO_PROFILE
+
+
+def _detect_plan() -> str:
+    """Detect which plan the user is on.
+
+    Returns: "max", "pro", "api", or "local"
+
+    Detection signals:
+    - CLAUDE_CODE_MAX_PLAN=1/true -> "max"
+    - AGENT_MEMORY_PLAN env override -> whatever they set
+    - ANTHROPIC_API_KEY present (not from Claude Code) -> "api"
+    - Running inside Claude Code (no API key, subscription auth) -> "pro"
+    - Default -> "pro" (safest — treats tokens as precious)
+    """
+    import os
+
+    # Explicit override — user knows their plan
+    explicit = os.environ.get("AGENT_MEMORY_PLAN", "").lower()
+    if explicit in ("max", "pro", "api", "local"):
+        return explicit
+
+    # Max Plan flag
+    if os.environ.get("CLAUDE_CODE_MAX_PLAN", "").lower() in ("1", "true"):
+        return "max"
+
+    # If ANTHROPIC_API_KEY is set AND we're not in Claude Code, it's API usage
+    has_api_key = bool(os.environ.get("ANTHROPIC_API_KEY"))
+    in_claude_code = bool(os.environ.get("CLAUDE_CODE_VERSION") or os.environ.get("CLAUDE_PLUGIN_ROOT"))
+
+    if has_api_key and not in_claude_code:
+        return "api"
+
+    # Default: assume Pro (most conservative for subscription users)
+    return "pro"
 
 
 def _is_local_model(model_lower: str) -> bool:
@@ -300,49 +528,6 @@ def _is_local_model(model_lower: str) -> bool:
         "codellama", "vicuna", "orca", "neural", "yi:", "command-r",
     ]
     return any(indicator in model_lower for indicator in local_indicators)
-
-
-def _sonnet_max_plan_profile() -> ModelProfile:
-    """Sonnet on Max Plan — same model but higher limits and bigger budget.
-
-    Max Plan gives higher rate limits. We also bump working memory
-    since the user is paying for a premium tier.
-    """
-    import copy
-    profile = copy.deepcopy(SONNET_PROFILE)
-    profile.name = "sonnet-max"
-    profile.description = "Claude Sonnet 4.6 on Max Plan — boosted limits."
-
-    # 2x memory budget (still only 8% of 200K)
-    profile.working_memory_total = 16_000
-    profile.budget_own_observations = 8_000
-    profile.budget_cross_agent = 5_000
-    profile.budget_summaries = 1_500
-    profile.budget_task_description = 1_500
-
-    # More observations
-    profile.max_own_observations = 10
-    profile.max_cross_observations = 5
-    profile.max_facts_per_obs = 5
-    profile.max_narrative_chars = 400
-
-    # Relaxed condensation
-    profile.condensation_threshold = 10
-
-    # Max Plan rate limits
-    profile.requests_per_minute = 100
-    profile.tokens_per_minute = 200_000
-
-    # Higher output
-    profile.output_limits = {
-        "researcher": 4000,
-        "coder": 8192,
-        "reviewer": 3000,
-        "summarizer": 1000,
-        "planner": 3000,
-    }
-
-    return profile
 
 
 def get_context_budget(profile: ModelProfile):
