@@ -45,7 +45,10 @@ def main():
             print(json.dumps({"context": ""}))
             sys.exit(0)
 
-        builder = ContextBuilder(memory=store)
+        # Auto-detect model profile from environment (ANTHROPIC_MODEL, CLAUDE_MODEL, etc.)
+        from src.profiles import detect_profile
+        profile = detect_profile()
+        builder = ContextBuilder.from_profile(store, profile)
         context = builder.build(
             project=project,
             agent_id=agent_id,

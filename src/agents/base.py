@@ -42,7 +42,13 @@ class AgentResult:
 
 
 class Agent:
-    """A single agent with memory integration and prompt caching."""
+    """A single agent with memory integration and prompt caching.
+
+    Auto-detects model profile from config.model when no explicit
+    context_builder is provided. This means:
+      Agent(AgentConfig(model="claude-opus-4-6-20250514"), memory, project)
+    automatically gets 50K working memory, 20 observations, etc.
+    """
 
     def __init__(
         self,
@@ -55,8 +61,19 @@ class Agent:
         self.config = config
         self.memory = memory
         self.project = project
-        self.context_builder = context_builder or ContextBuilder(memory)
-        self.condenser = condenser or MemoryCondenser(memory)
+
+        # Auto-detect profile from model ID if no explicit builder provided
+        if context_builder is None:
+            from ..profiles import detect_profile
+            profile = detect_profile(config.model)
+            self.context_builder = ContextBuilder.from_profile(memory, profile)
+            self.condenser = condenser or MemoryCondenser(
+                memory, threshold=profile.condensation_threshold
+            )
+        else:
+            self.context_builder = context_builder
+            self.condenser = condenser or MemoryCondenser(memory)
+
         self.client = anthropic.Anthropic()
         self.agent_id = f"{config.agent_type}-{uuid.uuid4().hex[:8]}"
         self.session_id = f"sess-{uuid.uuid4().hex[:12]}"

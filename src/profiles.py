@@ -241,6 +241,110 @@ def get_profile(name: str) -> ModelProfile:
     return PROFILES.get(name.lower(), SONNET_PROFILE)
 
 
+def detect_profile(model_id: Optional[str] = None) -> ModelProfile:
+    """Auto-detect the correct profile from a model ID or environment.
+
+    Detection order:
+    1. If model_id is passed, match it
+    2. Check ANTHROPIC_MODEL env var
+    3. Check CLAUDE_MODEL env var (set by Claude Code)
+    4. Check CLAUDE_CODE_MAX_PLAN env var (Max Plan flag)
+    5. Default to sonnet
+
+    Examples:
+        detect_profile("claude-opus-4-6-20250514")     -> OPUS_PROFILE
+        detect_profile("claude-sonnet-4-6-20250514")   -> SONNET_PROFILE
+        detect_profile("claude-haiku-4-5-20251001")    -> HAIKU_PROFILE
+        detect_profile("phi4:latest")                  -> LOCAL_PROFILE
+        detect_profile("llama3.1:8b")                  -> LOCAL_PROFILE
+        detect_profile()                               -> auto from env
+    """
+    import os
+
+    # Resolve model ID from args or environment
+    if model_id is None:
+        model_id = (
+            os.environ.get("ANTHROPIC_MODEL")
+            or os.environ.get("CLAUDE_MODEL")
+            or ""
+        )
+
+    model_lower = model_id.lower()
+
+    # Check for Max Plan env flag (Claude Code sets this)
+    is_max_plan = os.environ.get("CLAUDE_CODE_MAX_PLAN", "").lower() in ("1", "true")
+
+    # Match model family
+    if "opus" in model_lower:
+        return OPUS_PROFILE
+    elif "sonnet" in model_lower:
+        # Sonnet on Max Plan gets upgraded memory budget (not full Opus, but boosted)
+        if is_max_plan:
+            return _sonnet_max_plan_profile()
+        return SONNET_PROFILE
+    elif "haiku" in model_lower:
+        return HAIKU_PROFILE
+    elif _is_local_model(model_lower):
+        return LOCAL_PROFILE
+    elif is_max_plan:
+        # Max Plan but unknown model — assume Opus-tier
+        return OPUS_PROFILE
+    else:
+        return SONNET_PROFILE
+
+
+def _is_local_model(model_lower: str) -> bool:
+    """Check if a model ID looks like a local/Ollama model."""
+    local_indicators = [
+        ":", "phi", "llama", "mistral", "qwen", "gemma", "deepseek",
+        "codellama", "vicuna", "orca", "neural", "yi:", "command-r",
+    ]
+    return any(indicator in model_lower for indicator in local_indicators)
+
+
+def _sonnet_max_plan_profile() -> ModelProfile:
+    """Sonnet on Max Plan — same model but higher limits and bigger budget.
+
+    Max Plan gives higher rate limits. We also bump working memory
+    since the user is paying for a premium tier.
+    """
+    import copy
+    profile = copy.deepcopy(SONNET_PROFILE)
+    profile.name = "sonnet-max"
+    profile.description = "Claude Sonnet 4.6 on Max Plan — boosted limits."
+
+    # 2x memory budget (still only 8% of 200K)
+    profile.working_memory_total = 16_000
+    profile.budget_own_observations = 8_000
+    profile.budget_cross_agent = 5_000
+    profile.budget_summaries = 1_500
+    profile.budget_task_description = 1_500
+
+    # More observations
+    profile.max_own_observations = 10
+    profile.max_cross_observations = 5
+    profile.max_facts_per_obs = 5
+    profile.max_narrative_chars = 400
+
+    # Relaxed condensation
+    profile.condensation_threshold = 10
+
+    # Max Plan rate limits
+    profile.requests_per_minute = 100
+    profile.tokens_per_minute = 200_000
+
+    # Higher output
+    profile.output_limits = {
+        "researcher": 4000,
+        "coder": 8192,
+        "reviewer": 3000,
+        "summarizer": 1000,
+        "planner": 3000,
+    }
+
+    return profile
+
+
 def get_context_budget(profile: ModelProfile):
     """Convert a profile to a ContextBudget dataclass."""
     from src.memory.context_builder import ContextBudget
