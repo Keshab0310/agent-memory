@@ -1,0 +1,48 @@
+# Multi-Agent Orchestration Configuration
+
+orchestrator:
+  router_model: "claude-haiku-4-5-20251001"  # Cheap model for routing decisions
+  max_concurrent_agents: 5
+  max_total_tokens_per_task: 500000
+
+memory:
+  sqlite_path: "./data/memory.db"
+  chroma_path: "./data/chroma"
+  working_memory_token_budget: 2000
+  max_observations_per_query: 10
+  condensation_threshold: 5  # Summarize every N observations
+  chars_per_token_estimate: 4
+
+agents:
+  researcher:
+    model: "claude-sonnet-4-6-20250514"
+    max_output_tokens: 2000
+    system_prompt_file: "prompts/researcher.txt"
+    tools: ["web_search", "web_fetch"]
+
+  coder:
+    model: "claude-sonnet-4-6-20250514"
+    max_output_tokens: 4096
+    system_prompt_file: "prompts/coder.txt"
+    tools: ["read_file", "write_file", "run_command"]
+
+  reviewer:
+    model: "claude-sonnet-4-6-20250514"
+    max_output_tokens: 1500
+    system_prompt_file: "prompts/reviewer.txt"
+    tools: ["read_file"]
+
+  summarizer:
+    model: "claude-haiku-4-5-20251001"  # Cheap model is fine for summaries
+    max_output_tokens: 500
+    system_prompt_file: "prompts/summarizer.txt"
+    tools: []
+
+cache:
+  enabled: true
+  system_prompt_breakpoint: true
+  shared_context_breakpoint: true
+
+metrics:
+  log_file: "./data/metrics.jsonl"
+  log_every_call: true
