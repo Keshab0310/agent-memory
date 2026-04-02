@@ -1,0 +1,22 @@
+{
+  "name": "agent-memory",
+  "version": "0.1.0",
+  "description": "Save 60-90% on LLM token costs with intelligent memory compression",
+  "mcp_servers": {
+    "agent-memory": {
+      "command": "python",
+      "args": ["plugin/mcp_server.py"],
+      "transport": "stdio"
+    }
+  },
+  "hooks": {
+    "PostToolUse": {
+      "command": "python plugin/hooks/post_tool_use.py",
+      "timeout": 5000
+    },
+    "SessionStart": {
+      "command": "python plugin/hooks/session_start.py",
+      "timeout": 5000
+    }
+  }
+}
